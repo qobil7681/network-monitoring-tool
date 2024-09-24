@@ -41,7 +41,6 @@
                         {{ $t("Refresh Interval Description", [config.autoRefreshInterval]) }}
                     </div>
                 </div>
-
                 <div class="my-3">
                     <label for="switch-theme" class="form-label">{{ $t("Theme") }}</label>
                     <select id="switch-theme" v-model="config.theme" class="form-select" data-testid="theme-select">
@@ -327,7 +326,25 @@
                     <!-- 👀 Nothing here, please add a group or a monitor. -->
                     👀 {{ $t("statusPageNothing") }}
                 </div>
-
+                <div>
+                    <h1>Incident Reports</h1>
+                    <div v-if="isLoading">Loading...</div>
+                    <div v-else-if="filteredReports.length">
+                        <div
+                            v-for="report in filteredReports"
+                            :key="report._id"
+                            class="big-padding"
+                        >
+                            <h3>{{ (report._createdDate) }}</h3>
+                            <hr />
+                            <h4>{{ report._title }}</h4>
+                            <p>{{ report._content }}</p>
+                            <hr />
+                            <br /><br />
+                        </div>
+                    </div>
+                    <p v-else>No incident reports found or an error occurred.</p>
+                </div>
                 <PublicGroupList :edit-mode="enableEditMode" :show-tags="config.showTags" :show-certificate-expiry="config.showCertificateExpiry" />
             </div>
 
@@ -379,12 +396,15 @@ import DOMPurify from "dompurify";
 import Confirm from "../components/Confirm.vue";
 import PublicGroupList from "../components/PublicGroupList.vue";
 import MaintenanceTime from "../components/MaintenanceTime.vue";
+import dateTime from "../mixins/datetime.js";
 import { getResBaseURL } from "../util-frontend";
 import { STATUS_PAGE_ALL_DOWN, STATUS_PAGE_ALL_UP, STATUS_PAGE_MAINTENANCE, STATUS_PAGE_PARTIAL_DOWN, UP, MAINTENANCE } from "../util.ts";
 import Tag from "../components/Tag.vue";
 import VueMultiselect from "vue-multiselect";
+import io from "socket.io-client";
 
 const toast = useToast();
+
 dayjs.extend(duration);
 
 const leavePageMsg = "Do you really want to leave? you have unsaved changes!";
@@ -407,7 +427,7 @@ export default {
         Tag,
         VueMultiselect
     },
-
+    mixins: [ dateTime ],
     // Leave Page for vue route change
     beforeRouteLeave(to, from, next) {
         if (this.editMode) {
@@ -429,7 +449,6 @@ export default {
             default: null,
         },
     },
-
     data() {
         return {
             slug: null,
@@ -451,10 +470,24 @@ export default {
             updateCountdown: null,
             updateCountdownText: null,
             loading: true,
+            isLoading: false,
+            incidentReports: [],
+            error: null,
         };
     },
     computed: {
-
+        filteredReports() {
+            for (let reports in this.incidentReports) {
+                this.datetime(reports._createdDate);
+            }
+            return this.incidentReports
+                .slice()
+                .sort(
+                    (a, b) =>
+                        new Date(b._createdDate) - new Date(a._createdDate),
+                )
+                .slice(-25);
+        },
         logoURL() {
             if (this.imgDataUrl.startsWith("data:")) {
                 return this.imgDataUrl;
@@ -462,7 +495,6 @@ export default {
                 return this.baseURL + this.imgDataUrl;
             }
         },
-
         /**
          * If the monitor is added to public list, which will not be in this list.
          * @returns {object[]} List of monitors
@@ -731,7 +763,7 @@ export default {
         });
 
         this.updateHeartbeatList();
-
+        this.fetchIncidentReports();
         // Go to edit page if ?edit present
         // null means ?edit present, but no value
         if (this.$route.query.edit || this.$route.query.edit === null) {
@@ -797,7 +829,22 @@ export default {
                 });
             }
         },
+        async fetchIncidentReports() {
+            const socket = io();
+            this.isLoading = true;
+            socket.emit("fetchIncidentReports");
 
+            socket.on("incidentReports", (data) => {
+                this.incidentReports = data;
+                this.isLoading = false;
+            });
+
+            socket.on("incidentReportsError", (error) => {
+                this.error = error;
+                console.error("", error);
+                this.isLoading = false;
+            });
+        },
         /**
          * Setup timer to display countdown to refresh
          * @returns {void}

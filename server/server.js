@@ -387,7 +387,6 @@ let needSetup = false;
             }
 
         });
-
         socket.on("login", async (data, callback) => {
             const clientIP = await server.getClientIP(socket);
 
@@ -692,6 +691,16 @@ let needSetup = false;
             }
         });
 
+        socket.on("fetchIncidentReports", async () => {
+            try {
+                const incidentReports = await R.findAll("incident");
+                socket.emit("incidentReports", incidentReports);
+            } catch (error) {
+                console.error(error);
+                socket.emit("incidentReportsError", { error: "Failed to fetch incident reports" });
+            }
+        });
+
         // ***************************
         // Auth Only API
         // ***************************
@@ -751,7 +760,6 @@ let needSetup = false;
                 });
             }
         });
-
         // Edit a monitor
         socket.on("editMonitor", async (monitor, callback) => {
             try {
