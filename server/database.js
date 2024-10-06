@@ -6,6 +6,8 @@ const path = require("path");
 const { EmbeddedMariaDB } = require("./embedded-mariadb");
 const mysql = require("mysql2/promise");
 const { Settings } = require("./settings");
+const { UptimeCalculator } = require("./uptime-calculator");
+const dayjs = require("dayjs");
 
 /**
  * Database & App Data Folder
@@ -391,9 +393,23 @@ class Database {
         // https://knexjs.org/guide/migrations.html
         // https://gist.github.com/NigelEarle/70db130cc040cc2868555b29a0278261
         try {
+            // Disable foreign key check for SQLite
+            // Known issue of knex: https://github.com/drizzle-team/drizzle-orm/issues/1813
+            if (Database.dbConfig.type === "sqlite") {
+                await R.exec("PRAGMA foreign_keys = OFF");
+            }
+
             await R.knex.migrate.latest({
                 directory: Database.knexMigrationsPath,
             });
+
+            // Enable foreign key check for SQLite
+            if (Database.dbConfig.type === "sqlite") {
+                await R.exec("PRAGMA foreign_keys = ON");
+            }
+
+            await this.migrateAggregateTable();
+
         } catch (e) {
             // Allow missing patch files for downgrade or testing pr.
             if (e.message.includes("the following files are missing:")) {
@@ -709,6 +725,80 @@ class Database {
         } else {
             return "DATE_ADD(NOW(), INTERVAL ? HOUR)";
         }
+    }
+
+    /**
+     * TODO: Migrate the old data in the heartbeat table to the new format (stat_daily, stat_hourly, stat_minutely)
+     * It should be run once while upgrading V1 to V2
+     * @returns {Promise<void>}
+     */
+    static async migrateAggregateTable() {
+        log.debug("db", "Enter Migrate Aggregate Table function");
+
+        //
+        let migrated = await Settings.get("migratedAggregateTable");
+
+        if (migrated) {
+            log.debug("db", "Migrated, skip migration");
+            return;
+        }
+
+        log.info("db", "Migrating Aggregate Table");
+
+        // Migrate heartbeat to stat_minutely, using knex transaction
+        const trx = await R.knex.transaction();
+
+        // Get a list of unique dates from the heartbeat table, using raw sql
+        let dates = await trx.raw(`
+            SELECT DISTINCT DATE(time) AS date
+            FROM heartbeat
+            ORDER BY date ASC
+        `);
+
+        // Get a list of unique monitors from the heartbeat table, using raw sql
+        let monitors = await trx.raw(`
+            SELECT DISTINCT monitor_id
+            FROM heartbeat
+        `);
+
+        // Stop if stat_* tables are not empty
+        for (let table of [ "stat_minutely", "stat_hourly", "stat_daily" ]) {
+            let countResult = await trx.raw(`SELECT COUNT(*) AS count FROM ${table}`);
+            let count = countResult[0].count;
+            if (count > 0) {
+                log.warn("db", `Aggregate table ${table} is not empty, migration will not be started (Maybe you were using 2.0.0-dev?)`);
+                return;
+            }
+        }
+
+        console.log("Dates", dates);
+        console.log("Monitors", monitors);
+
+        for (let monitor of monitors) {
+            for (let date of dates) {
+                log.info("db", `Migrating monitor ${monitor.monitor_id} on date ${date.date}`);
+
+                // New Uptime Calculator
+                let calculator = new UptimeCalculator();
+
+                // TODO: Pass transaction to the calculator
+                // calculator.setTransaction(trx);
+
+                // Get all the heartbeats for this monitor and date
+                let heartbeats = await trx("heartbeat")
+                    .where("monitor_id", monitor.monitor_id)
+                    .whereRaw("DATE(time) = ?", [ date.date ])
+                    .orderBy("time", "asc");
+
+                for (let heartbeat of heartbeats) {
+                    calculator.update(heartbeat.status, heartbeat.ping, dayjs(heartbeat.time));
+                }
+            }
+        }
+
+        trx.commit();
+
+        //await Settings.set("migratedAggregateTable", true);
     }
 
 }
