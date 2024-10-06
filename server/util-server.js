@@ -18,6 +18,7 @@ const radiusClient = require("node-radius-client");
 const redis = require("redis");
 const oidc = require("openid-client");
 const tls = require("tls");
+const fs = require("fs");
 
 const {
     dictionaries: {
@@ -1020,4 +1021,10 @@ module.exports.axiosAbortSignal = (timeoutMs) => {
             return null;
         }
     }
+};
+
+module.exports.fileExists = (file) => {
+    return fs.promises.access(file, fs.constants.F_OK)
+        .then(() => true)
+        .catch(() => false);
 };
